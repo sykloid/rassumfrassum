@@ -3,12 +3,12 @@
 Server that sends out-of-order diagnostics to test version staleness detection.
 After sending v2 diagnostics, s1 will send a stale v1 diagnostic.
 """
+import argparse
 import threading
 import time
 
-
-from rassumfrassum.test import run_server, make_diagnostic, write_message_sync, log
-import argparse
+from rassumfrassum.test2 import run_toy_server, make_diagnostic, log
+from rassumfrassum.json import write_message_sync
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', required=True)
@@ -48,8 +48,21 @@ def on_didchange_handler(uri, text_doc):
         thread.daemon = True
         thread.start()
 
-run_server(
+def handle_didopen(params):
+    text_doc = params.get('textDocument', {})
+    uri = text_doc.get('uri', 'file:///unknown')
+    version = text_doc.get('version', 0)
+    send_diagnostics(uri, version)
+
+def handle_didchange(params):
+    text_doc = params.get('textDocument', {})
+    uri = text_doc.get('uri', 'file:///unknown')
+    on_didchange_handler(uri, text_doc)
+
+run_toy_server(
     name=args.name,
-    on_didopen=lambda uri, text_doc: send_diagnostics(uri, text_doc.get('version', 0)),
-    on_didchange=on_didchange_handler
+    notification_handlers={
+        'textDocument/didOpen': handle_didopen,
+        'textDocument/didChange': handle_didchange
+    }
 )

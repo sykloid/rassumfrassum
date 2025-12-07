@@ -5,27 +5,17 @@ Even if the primary server reports Incremental, if any secondary server reports
 Full, the merged capability should be Full.
 """
 
+import asyncio
 
-from rassumfrassum.test import send_and_log, log
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Test that textDocumentSync=1 wins."""
 
-    # Send initialize
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': 'initialize',
-        'params': {}
-    }, "Sending initialize")
+    client = await LspTestEndpoint.create()
+    init_response = await client.initialize()
 
-    # Expect initialize response
-    msg = read_message_sync()
-    assert msg is not None, "Expected initialize response"
-    assert 'result' in msg, f"Expected 'result' in initialize response: {msg}"
-
-    result = msg['result']
+    result = init_response['result']
     capabilities = result.get('capabilities', {})
     text_doc_sync = capabilities.get('textDocumentSync')
 
@@ -38,26 +28,7 @@ def main():
 
     log("client", "✓ textDocumentSync=1 correctly won over textDocumentSync=2")
 
-    # Send shutdown
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 3,
-        'method': 'shutdown',
-        'params': {}
-    }, "Sending shutdown")
-
-    msg = read_message_sync()
-    assert msg is not None, "Expected shutdown response"
-    assert 'id' in msg and msg['id'] == 3, f"Expected response with id=3: {msg}"
-    log("client", "Got shutdown response")
-
-    # Send exit
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'exit'
-    }, "Sending exit notification")
-
-    log("client", "done!")
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

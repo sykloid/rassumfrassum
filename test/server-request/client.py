@@ -3,41 +3,37 @@
 Test client that handles server requests.
 """
 
+import asyncio
 
-from rassumfrassum.test import do_initialize, do_initialized, do_shutdown, send_and_log, log
-from rassumfrassum.json import read_message_sync, write_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
+from rassumfrassum.json import write_message
 
-def main():
+async def main():
     """Send a sequence of LSP messages and handle server requests."""
 
-    do_initialize()
-    do_initialized()
+    client = await LspTestEndpoint.create()
+    await client.initialize()
 
     # After initialized, we expect server requests for workspace/configuration
     # Handle requests from both servers
     for i in range(2):
-        msg = read_message_sync()
-        assert msg is not None, f"Expected server request {i+1}"
-        assert 'method' in msg, f"Expected method in server request: {msg}"
-        assert 'id' in msg, f"Expected id in server request: {msg}"
-        assert msg.get('method') == 'workspace/configuration', f"Expected workspace/configuration request: {msg}"
-        log("client", f"Got server request: {msg}")
+        id, payload = await client.read_request('workspace/configuration')
+        log("client", f"Got server request: id={id} params={payload}")
 
         # Send response to server request
         response = {
             'jsonrpc': '2.0',
-            'id': msg['id'],
+            'id': id,
             'result': [{'pythonPath': '/usr/bin/python3'}]
         }
-        send_and_log(response, f"Responding to server request id={msg['id']}")
+        await write_message(client.writer, response)
+        log("client", f"Responding to server request id={id}")
 
     for i in range(2):
-        msg = read_message_sync()
-        assert msg is not None, f"Expected success notification {i+1}"
-        assert msg.get('method') == 'custom/requestResponseOk', \
-               f"Expected custom/requestResponseOk notification: {msg}"
+        _msg = await client.read_notification('custom/requestResponseOk')
+        log("client", f"Got success notification {i+1}")
 
-    do_shutdown()
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

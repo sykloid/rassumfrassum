@@ -3,15 +3,17 @@
 
 import argparse
 
-from rassumfrassum.test import run_server, make_diagnostic, write_message_sync
+from rassumfrassum.json import write_message_sync
+from rassumfrassum.test2 import run_toy_server, make_diagnostic
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', required=True)
 args = parser.parse_args()
 
-run_server(
-    name=args.name,
-    on_didopen=lambda uri, _: write_message_sync({
+def handle_didopen(params):
+    text_doc = params.get('textDocument', {})
+    uri = text_doc.get('uri', 'file:///unknown')
+    write_message_sync({
         'jsonrpc': '2.0',
         'method': 'textDocument/publishDiagnostics',
         'params': {
@@ -22,4 +24,8 @@ run_server(
             ]
         }
     })
+
+run_toy_server(
+    name=args.name,
+    notification_handlers={'textDocument/didOpen': handle_didopen}
 )

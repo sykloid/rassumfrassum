@@ -1,0 +1,304 @@
+"""
+Async test helpers for LSP testing.
+"""
+
+import asyncio
+import sys
+from typing import Callable, cast
+
+from .json import JSON, read_message, write_message, read_message_sync, write_message_sync
+
+def log(who: str, msg: str) -> None:
+    """Log to stderr."""
+    print(f"[{who}] {msg}", file=sys.stderr, flush=True)
+
+def make_diagnostic(line: int, char_start: int, char_end: int,
+                    severity: int, message: str, source: str | None = None) -> JSON:
+    """Create a diagnostic object."""
+    diag: JSON = {
+        'range': {
+            'start': {'line': line, 'character': char_start},
+            'end': {'line': line, 'character': char_end}
+        },
+        'severity': severity,
+        'message': message
+    }
+    if source:
+        diag['source'] = source
+    return diag
+
+
+class LspTestEndpoint:
+    """Async LSP test helper."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, name: str):
+        self.reader = reader
+        self.writer = writer
+        self.name = name
+        self._next_id = 1
+
+    @staticmethod
+    async def create(name : str = "client") -> 'LspTestEndpoint':
+        """Create an LSP test endpoint connected to stdin/stdout."""
+        loop = asyncio.get_event_loop()
+
+        # Setup async stdin
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+
+        # Setup async stdout
+        w_transport, w_protocol = await loop.connect_write_pipe(
+            asyncio.streams.FlowControlMixin, sys.stdout
+        )
+        writer = asyncio.StreamWriter(w_transport, w_protocol, reader, loop)
+
+        return LspTestEndpoint(reader=reader, writer=writer, name=name)
+
+    async def notify(self, method: str, params: JSON) -> None:
+        """Send a notification (no response expected)."""
+        await write_message(
+            self.writer,
+            {'jsonrpc': '2.0', 'method': method, 'params': params},
+        )
+
+    async def request(self, method: str, params: JSON | None = None) -> int:
+        """Send a request and return the request id."""
+        req_id = self._next_id
+        self._next_id += 1
+        msg = {'jsonrpc': '2.0', 'id': req_id, 'method': method}
+        if params is not None:
+            msg['params'] = params
+        await write_message(self.writer, msg)
+        return req_id
+
+    async def read_notification(self, method: str) -> JSON:
+        """Read messages until we get a notification with the given method."""
+        while True:
+            msg = await read_message(self.reader)
+            if not msg:
+                raise EOFError(f"EOF while waiting for notification {method}")
+
+            # Skip responses (have 'id' field)
+            if 'id' in msg:
+                log(self.name, f"Skipping response: id={msg['id']}")
+                continue
+
+            # Check if it's the notification we want
+            if msg.get('method') == method:
+                return msg['params']
+
+            log(self.name, f"Skipping notification: {msg.get('method')}")
+
+    async def read_request(self, method) -> tuple[int, JSON]:
+        """Read messages until we get a request for the given method"""
+        while True:
+            msg = await read_message(self.reader)
+            if not msg:
+                raise EOFError(f"EOF while waiting for notification {method}")
+
+            if 'id' in msg and msg.get('method') == method:
+                return (msg["id"], cast(JSON, msg.get('params')))
+
+    async def read_response(self, req_id: int) -> JSON:
+        """Read messages until we get a response with the given id."""
+        while True:
+            msg = await read_message(self.reader)
+            if not msg:
+                raise EOFError(f"EOF while waiting for response to id={req_id}")
+
+            # Skip notifications (no 'id' field)
+            if 'id' not in msg:
+                log(self.name, f"Skipping notification: {msg.get('method')}")
+                continue
+
+            # Check if it's the response we want
+            if msg['id'] == req_id:
+                return msg
+
+            log(self.name, f"Skipping response: id={msg['id']}")
+
+    async def initialize(
+        self, capabilities: JSON | None = None, rootUri: str | None = None
+    ) -> JSON:
+        """
+        Send initialize request and initialized notification.
+        Returns the initialize response.
+        """
+        import os
+
+        # Default capabilities that most servers expect
+        default_caps = {
+            'textDocument': {
+                'synchronization': {
+                    'dynamicRegistration': False,
+                    'willSave': True,
+                    'willSaveWaitUntil': True,
+                    'didSave': True,
+                }
+            },
+            'general': {'positionEncodings': ['utf-16']},
+        }
+
+        # Merge with provided capabilities
+        if capabilities:
+            from .util import dmerge
+
+            merged_caps = dmerge(default_caps.copy(), capabilities)
+        else:
+            merged_caps = default_caps
+
+        # Default rootUri to current directory
+        if rootUri is None:
+            rootUri = f"file://{os.getcwd()}"
+
+        # Send initialize request
+        log(self.name, "Sending initialize")
+        req_id = await self.request(
+            'initialize', {'rootUri': rootUri, 'capabilities': merged_caps}
+        )
+
+        # Read initialize response
+        msg = await self.read_response(req_id)
+        log(self.name, "Got initialize response")
+        server_info = msg.get('result', {}).get('serverInfo', {})
+        if server_info:
+            log(
+                self.name,
+                f"Server: {server_info.get('name')} v{server_info.get('version')}",
+            )
+
+        # Send initialized notification
+        log(self.name, "Sending initialized")
+        await self.notify('initialized', {})
+
+        return msg
+
+    async def shutdown(self) -> None:
+        """Send shutdown request and exit notification."""
+        log(self.name, "Sending shutdown")
+        req_id = await self.request('shutdown')
+        await self.read_response(req_id)
+        log(self.name, "Got shutdown response")
+
+        await self.notify('exit', {})
+        log(self.name, "done!")
+
+    async def assert_no_message_pending(self, timeout_sec: float) -> None:
+        """Assert that no message arrives within the given timeout."""
+        try:
+            msg = await asyncio.wait_for(
+                read_message(self.reader),
+                timeout=timeout_sec
+            )
+            raise AssertionError(f"Expected no message, but got: {msg}")
+        except asyncio.TimeoutError:
+            # This is what we expect - no message arrived
+            pass
+
+
+def run_toy_server(
+    name: str,
+    version: str = '1.0.0',
+    capabilities: JSON | None = None,
+    request_handlers: 'dict[str, Callable[[int, JSON | None], JSON | None]] | None' = None,
+    notification_handlers: 'dict[str, Callable[[JSON | None], None]] | None' = None
+) -> None:
+    """
+    Run a toy LSP server for testing.
+
+    Args:
+        name: Server name for serverInfo
+        version: Server version
+        capabilities: Server capabilities (defaults to empty dict)
+        request_handlers: Dict mapping method names to (msg_id, params) -> result handlers
+        notification_handlers: Dict mapping method names to (params) -> None handlers
+    """
+
+    # Default minimal capabilities
+    if capabilities is None:
+        capabilities = {}
+
+    # Default handlers
+    default_request_handlers: dict[str, 'Callable[[int, JSON | None], JSON | None]'] = {
+        'initialize': lambda msg_id, params: {
+            'capabilities': capabilities,
+            'serverInfo': {'name': name, 'version': version}
+        },
+        'shutdown': lambda msg_id, params: None,
+        'textDocument/hover': lambda msg_id, params: {
+            "contents": {"kind": "markdown", "value": "oh yeah "},
+            "range": {
+                "start": {"line": 0, "character": 5},
+                "end": {"line": 0, "character": 10}
+            }
+        }
+    }
+
+    # Merge user handlers (user handlers override defaults)
+    if request_handlers:
+        default_request_handlers.update(request_handlers)
+    request_handlers = default_request_handlers
+
+    if notification_handlers is None:
+        notification_handlers = {}
+
+    log(name, "Started!")
+
+    while True:
+        try:
+            message = read_message_sync()
+            if message is None:
+                break
+
+            method = message.get('method')
+            msg_id = message.get('id')
+            params = message.get('params')
+
+            # Handle requests (messages with id)
+            if msg_id is not None and method:
+                if method in request_handlers:
+                    result = request_handlers[method](msg_id, params)
+                    response = {
+                        'jsonrpc': '2.0',
+                        'id': msg_id,
+                        'result': result
+                    }
+                    write_message_sync(response)
+
+                    # Special handling for shutdown
+                    if method == 'shutdown':
+                        log(name, "shutting down")
+                        break
+                else:
+                    log(name, f"Unhandled request {method} (id={msg_id})")
+
+            # Handle notifications (messages without id)
+            elif method and msg_id is None:
+                if method in notification_handlers:
+                    notification_handlers[method](params)
+                else:
+                    log(name, f"got notification {method}")
+
+            # Handle responses from client (e.g., workspace/configuration response)
+            elif msg_id == 999 and method is None:
+                log(name, f"Got response to workspace/configuration request: {message}")
+                # Validate response and send notification if correct
+                result = message.get('result')
+                if (isinstance(result, list) and len(result) == 1 and
+                    isinstance(result[0], dict) and result[0].get('pythonPath') == '/usr/bin/python3'):
+                    # Response is correct, send success notification
+                    write_message_sync({
+                        'jsonrpc': '2.0',
+                        'method': 'custom/requestResponseOk',
+                        'params': {'server': name}
+                    })
+                    log(name, "Response validation passed, sent success notification")
+                else:
+                    log(name, f"Response validation FAILED: {result}")
+
+        except Exception as e:
+            log(name, f"Error: {e}")
+            break
+
+    log(name, "stopped")

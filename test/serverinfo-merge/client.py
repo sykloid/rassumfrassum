@@ -3,25 +3,18 @@
 Test client that verifies serverInfo merging in initialize response.
 """
 
+import asyncio
 
-from rassumfrassum.test import do_initialized, do_shutdown, send_and_log, log
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Send initialize and verify merged serverInfo."""
 
-    # Send initialize
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': 'initialize',
-        'params': {}
-    }, "Sending initialize")
+    client = await LspTestEndpoint.create()
 
-    msg = read_message_sync()
-    assert msg is not None, "Expected initialize response"
-    assert 'result' in msg, f"Expected 'result' in initialize response: {msg}"
-    result = msg['result']
+    # Send initialize
+    init_response = await client.initialize()
+    result = init_response['result']
 
     # Check capabilities exist
     assert 'capabilities' in result, f"Expected 'capabilities' in result: {result}"
@@ -46,8 +39,7 @@ def main():
 
     log("client", "Got initialize response with correct merged serverInfo")
 
-    do_initialized()
-    do_shutdown()
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

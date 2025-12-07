@@ -3,59 +3,33 @@
 Test that textDocument/rename routes to the first server with renameProvider.
 """
 
+import asyncio
 
-from rassumfrassum.test import send_and_log, log
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Test that rename routes to first server with renameProvider."""
 
-    # Send initialize
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': 'initialize',
-        'params': {}
-    }, "Sending initialize")
+    client = await LspTestEndpoint.create()
+    init_response = await client.initialize()
 
-    # Expect initialize response
-    msg = read_message_sync()
-    assert msg is not None, "Expected initialize response"
-    assert 'result' in msg, f"Expected 'result' in initialize response: {msg}"
-
-    result = msg['result']
+    result = init_response['result']
     capabilities = result.get('capabilities', {})
     has_rename = capabilities.get('renameProvider')
 
     log("client", f"Got initialize response with renameProvider={has_rename}")
     assert has_rename, "Expected renameProvider to be present in merged capabilities"
 
-    # Send initialized notification
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'initialized',
-        'params': {}
-    }, "Sending initialized")
-
     # Send textDocument/rename request
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 2,
-        'method': 'textDocument/rename',
-        'params': {
-            'textDocument': {'uri': 'file:///test.py'},
-            'position': {'line': 0, 'character': 0},
-            'newName': 'newName'
-        }
-    }, "Sending textDocument/rename")
+    req_id = await client.request('textDocument/rename', {
+        'textDocument': {'uri': 'file:///test.py'},
+        'position': {'line': 0, 'character': 0},
+        'newName': 'newName'
+    })
 
     # Expect rename response from ONLY s2 (first server with renameProvider)
-    msg = read_message_sync()
-    assert msg is not None, "Expected rename response"
-    assert 'result' in msg, f"Expected 'result' in rename response: {msg}"
-    assert msg.get('id') == 2, f"Expected response with id=2: {msg}"
-
-    workspace_edit = msg['result']
+    response = await client.read_response(req_id)
+    workspace_edit = response['result']
     log("client", f"Got rename response: {workspace_edit}")
 
     # Should be from s2 only (no aggregation, early termination)
@@ -70,26 +44,7 @@ def main():
 
     log("client", "✓ Rename correctly routed to first server with renameProvider (s2)")
 
-    # Send shutdown
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 3,
-        'method': 'shutdown',
-        'params': {}
-    }, "Sending shutdown")
-
-    msg = read_message_sync()
-    assert msg is not None, "Expected shutdown response"
-    assert 'id' in msg and msg['id'] == 3, f"Expected response with id=3: {msg}"
-    log("client", "Got shutdown response")
-
-    # Send exit
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'exit'
-    }, "Sending exit notification")
-
-    log("client", "done!")
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

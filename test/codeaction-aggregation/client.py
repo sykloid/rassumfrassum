@@ -4,62 +4,36 @@ Test that textDocument/codeAction aggregates results from all servers
 with codeActionProvider capability.
 """
 
+import asyncio
 
-from rassumfrassum.test import send_and_log, log
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Test that code actions are aggregated from multiple servers."""
 
-    # Send initialize
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': 'initialize',
-        'params': {}
-    }, "Sending initialize")
+    client = await LspTestEndpoint.create()
+    init_response = await client.initialize()
 
-    # Expect initialize response
-    msg = read_message_sync()
-    assert msg is not None, "Expected initialize response"
-    assert 'result' in msg, f"Expected 'result' in initialize response: {msg}"
-
-    result = msg['result']
+    result = init_response['result']
     capabilities = result.get('capabilities', {})
     has_code_actions = capabilities.get('codeActionProvider')
 
     log("client", f"Got initialize response with codeActionProvider={has_code_actions}")
     assert has_code_actions, "Expected codeActionProvider to be present in merged capabilities"
 
-    # Send initialized notification
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'initialized',
-        'params': {}
-    }, "Sending initialized")
-
     # Send textDocument/codeAction request
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 2,
-        'method': 'textDocument/codeAction',
-        'params': {
-            'textDocument': {'uri': 'file:///test.py'},
-            'range': {
-                'start': {'line': 0, 'character': 0},
-                'end': {'line': 0, 'character': 10}
-            },
-            'context': {'diagnostics': []}
-        }
-    }, "Sending textDocument/codeAction")
+    req_id = await client.request('textDocument/codeAction', {
+        'textDocument': {'uri': 'file:///test.py'},
+        'range': {
+            'start': {'line': 0, 'character': 0},
+            'end': {'line': 0, 'character': 10}
+        },
+        'context': {'diagnostics': []}
+    })
 
     # Expect aggregated code action response
-    msg = read_message_sync()
-    assert msg is not None, "Expected codeAction response"
-    assert 'result' in msg, f"Expected 'result' in codeAction response: {msg}"
-    assert msg.get('id') == 2, f"Expected response with id=2: {msg}"
-
-    actions = msg['result']
+    response = await client.read_response(req_id)
+    actions = response['result']
     log("client", f"Got {len(actions)} code actions")
 
     # Should have 2 code actions (from s2 and s3, but not s1)
@@ -73,26 +47,7 @@ def main():
 
     log("client", "✓ Code actions correctly aggregated from servers with codeActionProvider")
 
-    # Send shutdown
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 3,
-        'method': 'shutdown',
-        'params': {}
-    }, "Sending shutdown")
-
-    msg = read_message_sync()
-    assert msg is not None, "Expected shutdown response"
-    assert 'id' in msg and msg['id'] == 3, f"Expected response with id=3: {msg}"
-    log("client", "Got shutdown response")
-
-    # Send exit
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'exit'
-    }, "Sending exit notification")
-
-    log("client", "done!")
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

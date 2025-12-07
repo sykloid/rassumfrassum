@@ -4,61 +4,47 @@ Test client for out-of-order diagnostic versions.
 Verifies that stale diagnostics are dropped.
 """
 
+import asyncio
 
-from rassumfrassum.test import do_initialize, do_initialized, do_shutdown, send_and_log, log, assert_no_message_pending
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Test that stale diagnostics are dropped."""
 
-    do_initialize()
-    do_initialized()
+    client = await LspTestEndpoint.create()
+    await client.initialize()
 
     # Send didOpen with version 1
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'textDocument/didOpen',
-        'params': {
-            'textDocument': {
-                'uri': 'file:///tmp/test.py',
-                'languageId': 'python',
-                'version': 1,
-                'text': 'print("hello")\n'
-            }
+    await client.notify('textDocument/didOpen', {
+        'textDocument': {
+            'uri': 'file:///tmp/test.py',
+            'languageId': 'python',
+            'version': 1,
+            'text': 'print("hello")\n'
         }
-    }, "Sending didOpen (version 1)")
+    })
 
     # Expect diagnostics for version 1
-    msg = read_message_sync()
-    assert msg is not None, "Expected publishDiagnostics for version 1"
-    assert msg.get('method') == 'textDocument/publishDiagnostics'
-    params = msg.get('params', {})
-    assert params.get('version') == 1
-    diag_count_v1 = len(params.get('diagnostics', []))
+    payload = await client.read_notification('textDocument/publishDiagnostics')
+    assert payload.get('version') == 1
+    diag_count_v1 = len(payload.get('diagnostics', []))
     log("client", f"Got diagnostics for version 1: {diag_count_v1} diagnostics")
 
     # Send didChange with version 2
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'textDocument/didChange',
-        'params': {
-            'textDocument': {
-                'uri': 'file:///tmp/test.py',
-                'version': 2
-            },
-            'contentChanges': [
-                {'text': 'print("hello world")\n'}
-            ]
-        }
-    }, "Sending didChange (version 2)")
+    await client.notify('textDocument/didChange', {
+        'textDocument': {
+            'uri': 'file:///tmp/test.py',
+            'version': 2
+        },
+        'contentChanges': [
+            {'text': 'print("hello world")\n'}
+        ]
+    })
 
     # Expect diagnostics for version 2
-    msg = read_message_sync()
-    assert msg is not None, "Expected publishDiagnostics for version 2"
-    assert msg.get('method') == 'textDocument/publishDiagnostics'
-    params = msg.get('params', {})
-    assert params.get('version') == 2
-    diag_count_v2 = len(params.get('diagnostics', []))
+    payload = await client.read_notification('textDocument/publishDiagnostics')
+    assert payload.get('version') == 2
+    diag_count_v2 = len(payload.get('diagnostics', []))
     log("client", f"Got diagnostics for version 2: {diag_count_v2} diagnostics")
 
     # Wait for potential stale v1 diagnostic (should NOT arrive)
@@ -66,10 +52,10 @@ def main():
     # Wait 1500ms to make 100% sure we didn't start a new aggregation
     # which has timed out for some reason.
     log("client", "Checking that stale v1 diagnostic was dropped...")
-    assert_no_message_pending(timeout_sec=1.5)
+    await client.assert_no_message_pending(timeout_sec=1.5)
     log("client", "Stale v1 diagnostic was correctly dropped!")
 
-    do_shutdown()
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

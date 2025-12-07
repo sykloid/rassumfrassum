@@ -3,13 +3,15 @@
 A more complete test client that exercises various LSP messages.
 """
 
-from rassumfrassum.test import do_initialize, do_initialized, do_shutdown, send_and_log, log
-from rassumfrassum.json import read_message_sync
+import asyncio
 
-def main():
+from rassumfrassum.test2 import LspTestEndpoint, log
+
+async def main():
     """Send a sequence of LSP messages."""
 
-    init_response = do_initialize()
+    client = await LspTestEndpoint.create()
+    init_response = await client.initialize()
 
     # Verify merged serverInfo
     result = init_response['result']
@@ -20,45 +22,30 @@ def main():
         f"Expected merged name 's1+s2', got '{server_info.get('name')}'"
     log("client", f"Verified merged server name: {server_info['name']}")
 
-    do_initialized()
-
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'textDocument/didOpen',
-        'params': {
-            'textDocument': {
-                'uri': 'file:///tmp/test.py',
-                'languageId': 'python',
-                'version': 1,
-                'text': 'print("hello")\n'
-            }
+    await client.notify('textDocument/didOpen', {
+        'textDocument': {
+            'uri': 'file:///tmp/test.py',
+            'languageId': 'python',
+            'version': 1,
+            'text': 'print("hello")\n'
         }
-    }, "Sending didOpen notification")
+    })
 
-    msg = read_message_sync()
-    assert msg is not None, "Expected publishDiagnostics notification"
-    assert msg.get('method') == 'textDocument/publishDiagnostics', f"Expected publishDiagnostics, got: {msg}"
-    assert 'params' in msg, f"Expected 'params' in diagnostics: {msg}"
-    log("client", f"Got diagnostics {msg}")
+    payload = await client.read_notification('textDocument/publishDiagnostics')
+    log("client", f"Got diagnostics {payload}")
 
-    # 4. Hover request
-    send_and_log({
-        'jsonrpc': '2.0',
-        'id': 2,
-        'method': 'textDocument/hover',
-        'params': {
-            'textDocument': {'uri': 'file:///tmp/test.py'},
-            'position': {'line': 0, 'character': 0}
-        }
-    }, "Sending hover request")
+    # Hover request
+    req_id = await client.request('textDocument/hover', {
+        'textDocument': {'uri': 'file:///tmp/test.py'},
+        'position': {'line': 0, 'character': 0}
+    })
 
-    msg = read_message_sync()
-    assert msg is not None, "Expected hover response"
-    assert 'id' in msg and msg['id'] == 2, f"Expected response with id=2: {msg}"
-    assert 'result' in msg or 'error' in msg, f"Expected 'result' or 'error' in hover response: {msg}"
-    log("client", f"Got hover response {msg}")
+    hover_response = await client.read_response(req_id)
+    assert 'result' in hover_response or 'error' in hover_response, \
+        f"Expected 'result' or 'error' in hover response: {hover_response}"
+    log("client", f"Got hover response {hover_response}")
 
-    do_shutdown()
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

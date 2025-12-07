@@ -3,34 +3,27 @@
 Test client for late diagnostics scenario.
 """
 
+import asyncio
 
-from rassumfrassum.test import do_initialize, do_initialized, do_shutdown, send_and_log, log
-from rassumfrassum.json import read_message_sync
+from rassumfrassum.test2 import LspTestEndpoint, log
 
-def main():
+async def main():
     """Send a sequence of LSP messages."""
 
-    do_initialize()
-    do_initialized()
+    client = await LspTestEndpoint.create()
+    await client.initialize()
 
-    send_and_log({
-        'jsonrpc': '2.0',
-        'method': 'textDocument/didOpen',
-        'params': {
-            'textDocument': {
-                'uri': 'file:///tmp/test.py',
-                'languageId': 'python',
-                'version': 1,
-                'text': 'print("hello")\n'
-            }
+    await client.notify('textDocument/didOpen', {
+        'textDocument': {
+            'uri': 'file:///tmp/test.py',
+            'languageId': 'python',
+            'version': 1,
+            'text': 'print("hello")\n'
         }
-    }, "Sending didOpen notification")
+    })
 
-    msg = read_message_sync()
-    assert msg is not None, "Expected publishDiagnostics notification"
-    assert msg.get('method') == 'textDocument/publishDiagnostics', f"Expected publishDiagnostics, got: {msg}"
-    assert 'params' in msg, f"Expected 'params' in diagnostics: {msg}"
-    diagnostics = msg['params'].get('diagnostics', [])
+    payload = await client.read_notification('textDocument/publishDiagnostics')
+    diagnostics = payload.get('diagnostics', [])
     assert len(diagnostics) == 4, f"Expected 4 diagnostics (2 from each server), got {len(diagnostics)}: {diagnostics}"
 
     # Verify both servers contributed
@@ -38,9 +31,9 @@ def main():
     assert 's1' in sources, f"Expected diagnostics from s1, got sources: {sources}"
     assert 's2' in sources, f"Expected diagnostics from s2, got sources: {sources}"
 
-    log("client", f"Got aggregated diagnostics from both servers: {msg}")
+    log("client", f"Got aggregated diagnostics from both servers")
 
-    do_shutdown()
+    await client.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())

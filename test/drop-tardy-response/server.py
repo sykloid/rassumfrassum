@@ -3,12 +3,11 @@
 Server that can delay its initialize response.
 Used to test tardy request response dropping.
 """
-import time
-import sys
 
-
-from rassumfrassum.json import read_message_sync, write_message_sync
 import argparse
+import time
+
+from rassumfrassum.test2 import run_toy_server, log
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', required=True)
@@ -16,64 +15,24 @@ parser.add_argument('--initialize-delay', type=int, default=0,
                    help='Delay in milliseconds before responding to initialize')
 args = parser.parse_args()
 
-def log(msg):
-    print(msg, file=sys.stderr)
+def handle_initialize(msg_id, params):
+    """Handle initialize with optional delay."""
+    if args.initialize_delay > 0:
+        log(args.name, f"Delaying initialize response by {args.initialize_delay}ms")
+        time.sleep(args.initialize_delay / 1000.0)
 
-log(f"[{args.name}] Started!")
+    return {
+        'capabilities': {
+            'textDocumentSync': 2,
+            'hoverProvider': True,
+        },
+        'serverInfo': {
+            'name': args.name,
+            'version': '1.0.0'
+        }
+    }
 
-while True:
-    try:
-        message = read_message_sync()
-        if message is None:
-            break
-
-        method = message.get('method')
-        msg_id = message.get('id')
-
-        if method == 'initialize':
-            # Delay if configured
-            if args.initialize_delay > 0:
-                log(f"[{args.name}] Delaying initialize response by {args.initialize_delay}ms")
-                time.sleep(args.initialize_delay / 1000.0)
-
-            response = {
-                'jsonrpc': '2.0',
-                'id': msg_id,
-                'result': {
-                    'capabilities': {
-                        'textDocumentSync': 2,
-                        'hoverProvider': True,
-                    },
-                    'serverInfo': {
-                        'name': args.name,
-                        'version': '1.0.0'
-                    }
-                }
-            }
-            write_message_sync(response)
-            log(f"[{args.name}] Sent initialize response")
-
-        elif method == 'shutdown':
-            response = {
-                'jsonrpc': '2.0',
-                'id': msg_id,
-                'result': None
-            }
-            write_message_sync(response)
-            log(f"[{args.name}] shutting down")
-            break
-
-        elif method in ('initialized', 'textDocument/didOpen', 'textDocument/didChange'):
-            log(f"[{args.name}] got notification {method}")
-
-        else:
-            if msg_id is not None:
-                log(f"[{args.name}] request {method} (id={msg_id})")
-            else:
-                log(f"[{args.name}] notification {method}")
-
-    except Exception as e:
-        log(f"[{args.name}] Error: {e}")
-        break
-
-log(f"[{args.name}] stopped")
+run_toy_server(
+    name=args.name,
+    request_handlers={'initialize': handle_initialize}
+)
