@@ -32,7 +32,7 @@ class LspLogic:
         # Map server ID to server object for data recovery
         self.server_by_id: dict[int, Server] = {id(s): s for s in servers}
 
-    def on_client_request(
+    async def on_client_request(
         self, method: str, params: JSON, servers: list[Server]
     ) -> list[Server]:
         """
@@ -98,7 +98,7 @@ class LspLogic:
         # Default: route to primary server
         return [self.servers[0]] if servers else []
 
-    def on_client_notification(self, method: str, params: JSON) -> None:
+    async def on_client_notification(self, method: str, params: JSON) -> None:
         """
         Handle client notifications to track document state.
         """
@@ -122,7 +122,7 @@ class LspLogic:
             if uri is not None:
                 self.document_versions.pop(uri, None)
 
-    def on_client_response(
+    async def on_client_response(
         self,
         method: str,
         request_params: JSON,
@@ -135,7 +135,7 @@ class LspLogic:
         """
         pass
 
-    def on_server_request(
+    async def on_server_request(
         self, method: str, params: JSON, source: Server
     ) -> None:
         """
@@ -143,7 +143,7 @@ class LspLogic:
         """
         pass
 
-    def on_server_notification(
+    async def on_server_notification(
         self, method: str, params: JSON, source: Server
     ) -> None:
         """
@@ -155,7 +155,7 @@ class LspLogic:
                 if 'source' not in diag:
                     diag['source'] = source.name
 
-    def on_server_response(
+    async def on_server_response(
         self,
         method: str | None,
         request_params: JSON,

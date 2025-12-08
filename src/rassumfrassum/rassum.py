@@ -218,7 +218,7 @@ async def run_multiplexer(
                 if id is None and method is not None:
                     # Notification
                     log_message("-->", msg, method)
-                    logic.on_client_notification(method, msg.get("params", {}))
+                    await logic.on_client_notification(method, msg.get("params", {}))
 
                     # FIXME: This breaks abstraction
                     if method in (
@@ -244,7 +244,7 @@ async def run_multiplexer(
                     if method == "shutdown":
                         shutting_down = True
                     # Determine which servers to route to.
-                    target_servers = logic.on_client_request(
+                    target_servers = await logic.on_client_request(
                         method, params, [proc.server for proc in procs]
                     )
                     target_procs = cast(
@@ -274,7 +274,7 @@ async def run_multiplexer(
                         response_payload = (
                             msg.get("error") if is_error else msg.get("result")
                         )
-                        logic.on_client_response(
+                        await logic.on_client_response(
                             req_method,
                             req_params,
                             cast(JSON, response_payload),
@@ -420,7 +420,7 @@ async def run_multiplexer(
                     log_message(f"[{proc.name}] <-s", msg, method)
                     # Handle server request
                     params = msg.get("params", {})
-                    logic.on_server_request(
+                    await logic.on_server_request(
                         method, cast(JSON, params), proc.server
                     )
 
@@ -457,7 +457,7 @@ async def run_multiplexer(
                         msg.get("error") if is_error else msg.get("result")
                     )
                     log_message(f"[{proc.name}] <--", msg, method)
-                    logic.on_server_response(
+                    await logic.on_server_response(
                         method,
                         cast(JSON, req_params),
                         cast(JSON, payload),
@@ -473,7 +473,7 @@ async def run_multiplexer(
                 else:
                     log_message(f"[{proc.name}] <--", msg, method)
                     payload = msg.get("params", {})
-                    logic.on_server_notification(
+                    await logic.on_server_notification(
                         method, cast(JSON, payload), proc.server
                     )
                     aggregation_key = logic.get_notif_aggregation_key(

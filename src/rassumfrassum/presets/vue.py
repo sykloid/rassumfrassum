@@ -1,6 +1,6 @@
 """Vue preset: vue-language-server + tailwindcss-language-server with custom logic."""
 
-import subprocess
+import asyncio
 from pathlib import Path
 
 from rassumfrassum.frassum import LspLogic, Server
@@ -11,20 +11,20 @@ from rassumfrassum.util import dmerge
 class VueLogic(LspLogic):
     """Custom logic LSP for Vue-friendly servers."""
 
-    def on_client_request(
+    async def on_client_request(
         self, method: str, params: JSON, servers: list[Server]
     ):
         if method == 'initialize':
             # vue-language server absolutely needs a TypeScript SDK
             # path. Find it via npm
             try:
-                npm_output = subprocess.run(
-                    ['npm', 'list', '--global', '--parseable', 'typescript'],
-                    capture_output=True,
-                    text=True,
-                    check=False,
+                proc = await asyncio.create_subprocess_exec(
+                    'npm', 'list', '--global', '--parseable', 'typescript',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                first_line = npm_output.stdout.strip().split('\n')[0]
+                stdout, _ = await proc.communicate()
+                first_line = stdout.decode().strip().split('\n')[0]
                 tsdk_path = str(Path(first_line) / 'lib')
             except Exception:
                 tsdk_path = '/usr/local/lib/node_modules/typescript/lib'
@@ -36,7 +36,7 @@ class VueLogic(LspLogic):
                     'vue': {'hybridMode': False},
                 },
             )
-        return super().on_client_request(method, params, servers)
+        return await super().on_client_request(method, params, servers)
 
 
 def get_servers():
