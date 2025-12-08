@@ -8,7 +8,7 @@ import asyncio
 import sys
 
 from .rassum import run_multiplexer
-from .util import log
+from .util import log, set_log_level, set_max_log_length, LOG_SILENT, LOG_WARN, LOG_INFO, LOG_DEBUG, LOG_EVENT, LOG_TRACE
 
 
 def parse_server_commands(args: list[str]) -> tuple[list[str], list[list[str]]]:
@@ -81,7 +81,33 @@ def main() -> None:
         metavar='CLASS',
         help='Logic class to use for routing (default: LspLogic).',
     )
+    parser.add_argument(
+        '--log-level',
+        type=str,
+        choices=['silent', 'warn', 'info', 'event', 'debug', 'trace'],
+        default='event',
+        help='Set logging verbosity (default: event).',
+    )
+    parser.add_argument(
+        '--max-log-length',
+        type=int,
+        default=4000,
+        metavar='N',
+        help='Maximum log message length in bytes; 0 for unlimited (default: 4000).',
+    )
     opts = parser.parse_args(rass_args)
+
+    # Set log level based on argument
+    log_level_map = {
+        'silent': LOG_SILENT,
+        'warn': LOG_WARN,
+        'info': LOG_INFO,
+        'event': LOG_EVENT,
+        'debug': LOG_DEBUG,
+        'trace': LOG_TRACE,
+    }
+    set_log_level(log_level_map[opts.log_level])
+    set_max_log_length(opts.max_log_length)
 
     if not server_commands:
         log(
