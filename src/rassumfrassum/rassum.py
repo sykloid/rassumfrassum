@@ -342,6 +342,7 @@ async def run_multiplexer(
                 method=method,
                 aggregate=payload,
             )
+            log(f"Message from {proc.name} starts aggregation for {method} ({id(ag)})")
             ag.timeout_task = asyncio.create_task(
                 send_whatever_is_there(ag, method)
             )
