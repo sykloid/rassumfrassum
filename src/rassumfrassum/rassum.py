@@ -235,6 +235,7 @@ async def run_multiplexer(
 
                     for p in procs:
                         await write_lsp_message(p.stdin, msg)
+                        log_message(f"[{p.name}] -->", msg, method)
                 elif method is not None:
                     # Request
                     log_message("-->", msg, method)
@@ -284,10 +285,10 @@ async def run_multiplexer(
 
                         # Remap ID back to original
                         msg["id"] = original_id
+                        await write_lsp_message(target_proc.stdin, msg)
                         log_message(
                             f"[{target_proc.name}] s->", msg, req_method
                         )
-                        await write_lsp_message(target_proc.stdin, msg)
                     else:
                         # Unknown response, log error
                         warn(f"Unknown request for response with id={id}!")
