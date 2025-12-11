@@ -187,7 +187,7 @@ async def run_multiplexer(
         client_writer_transport, client_writer_protocol, None, loop
     )
 
-    async def send_to_client(message: JSON, method: str, direction="<--"):
+    async def _send_to_client(message: JSON, method: str, direction="<--"):
         """Send a message to the client, with optional delay."""
 
         async def send():
@@ -202,6 +202,115 @@ async def run_multiplexer(
             asyncio.create_task(delayed_send())
         else:
             await send()
+
+    def _reconstruct(ag: AggregationState) -> JSON:
+        """Reconstruct full JSONRPC message from aggregation state."""
+
+        payload, is_error = logic.aggregate_payloads(
+            ag.method, list(ag.aggregate.values())
+        )
+
+        if ag.id is not None:
+            # Response
+            return {
+                "jsonrpc": "2.0",
+                "id": ag.id,
+                "error" if is_error else "result": payload,
+            }
+        else:
+            # Notification
+            return {
+                "jsonrpc": "2.0",
+                "method": ag.method,
+                "params": payload,
+            }
+
+    def _start_aggregation(
+        item, aggregation_key, method, responders, req_id
+    ):
+        """Start a new aggregation with the first message."""
+        proc = cast(InferiorProcess, item.server.cookie)
+        outstanding = responders.copy()
+        outstanding.discard(proc)
+
+        async def send_whatever_is_there(state: AggregationState, method):
+            await asyncio.sleep(
+                logic.get_aggregation_timeout_ms(method) / 1000.0
+            )
+            log(f"Timeout for aggregation for {method} ({id(state)})!")
+            state.dispatched = "timed-out"
+            await _send_to_client(_reconstruct(state), method)
+
+        ag = AggregationState(
+            outstanding=outstanding,
+            id=req_id,
+            method=method,
+            aggregate={id(proc): item},
+        )
+        debug(
+            f"Message from {item.server.name} starts aggregation for {method} ({id(ag)})"
+        )
+        ag.timeout_task = asyncio.create_task(
+            send_whatever_is_there(ag, method)
+        )
+        pending_aggregations[aggregation_key] = ag
+
+    async def _continue_aggregation(item, ag):
+        """Continue an existing aggregation with an additional message."""
+        proc = cast(InferiorProcess, item.server.cookie)
+        method = ag.method
+        debug(
+            f"Message from {item.server.name} continues aggregation for {method} ({id(ag)})"
+        )
+
+        if ag.dispatched:
+            debug(
+                f"Tardy {item.server.name} aggregation for {method} ({id(ag)})"
+            )
+
+        ag.aggregate[id(proc)] = item
+        ag.outstanding.discard(proc)
+
+        if not ag.outstanding:
+            # Aggregation is now complete
+            if ag.dispatched == "timed-out":
+                if opts.drop_tardy:
+                    warn(
+                        f"Dropping tardy message for previously timed-out "
+                        f"aggregation for {method} ({id(ag)})"
+                    )
+                    return
+                else:
+                    debug(
+                        f"Re-sending now-complete timed-out "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+            elif ag.dispatched:
+                if opts.drop_tardy:
+                    warn(
+                        f"Dropping tardy message for previously completed "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+                    return
+                else:
+                    debug(
+                        f"Re-sending enhancement of previously completed "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+            else:
+                debug(f"Completing aggregation for {method} ({id(ag)})!")
+
+            # Cancel timeout
+            if ag.timeout_task:
+                ag.timeout_task.cancel()
+
+            # Send aggregated result to client
+            await _send_to_client(_reconstruct(ag), method)
+            ag.dispatched = True
+
+            # Remove from requests needing aggregation if it's a response
+            if ag.id is not None:
+                inflight_requests.pop(ag.id, None)
 
     async def handle_client_messages():
         """Read from client and route to appropriate servers."""
@@ -290,115 +399,6 @@ async def run_multiplexer(
                 p.stdin.close()
                 await p.stdin.wait_closed()
 
-    def _reconstruct(ag: AggregationState) -> JSON:
-        """Reconstruct full JSONRPC message from aggregation state."""
-
-        payload, is_error = logic.aggregate_payloads(
-            ag.method, list(ag.aggregate.values())
-        )
-
-        if ag.id is not None:
-            # Response
-            return {
-                "jsonrpc": "2.0",
-                "id": ag.id,
-                "error" if is_error else "result": payload,
-            }
-        else:
-            # Notification
-            return {
-                "jsonrpc": "2.0",
-                "method": ag.method,
-                "params": payload,
-            }
-
-    async def _start_aggregation(
-        item, aggregation_key, method, responders, req_id
-    ):
-        """Start a new aggregation with the first message."""
-        proc = cast(InferiorProcess, item.server.cookie)
-        outstanding = responders.copy()
-        outstanding.discard(proc)
-
-        async def send_whatever_is_there(state: AggregationState, method):
-            await asyncio.sleep(
-                logic.get_aggregation_timeout_ms(method) / 1000.0
-            )
-            log(f"Timeout for aggregation for {method} ({id(state)})!")
-            state.dispatched = "timed-out"
-            await send_to_client(_reconstruct(state), method)
-
-        ag = AggregationState(
-            outstanding=outstanding,
-            id=req_id,
-            method=method,
-            aggregate={id(proc): item},
-        )
-        debug(
-            f"Message from {item.server.name} starts aggregation for {method} ({id(ag)})"
-        )
-        ag.timeout_task = asyncio.create_task(
-            send_whatever_is_there(ag, method)
-        )
-        pending_aggregations[aggregation_key] = ag
-
-    async def _continue_aggregation(item, ag):
-        """Continue an existing aggregation with an additional message."""
-        proc = cast(InferiorProcess, item.server.cookie)
-        method = ag.method
-        debug(
-            f"Message from {item.server.name} continues aggregation for {method} ({id(ag)})"
-        )
-
-        if ag.dispatched:
-            debug(
-                f"Tardy {item.server.name} aggregation for {method} ({id(ag)})"
-            )
-
-        ag.aggregate[id(proc)] = item
-        ag.outstanding.discard(proc)
-
-        if not ag.outstanding:
-            # Aggregation is now complete
-            if ag.dispatched == "timed-out":
-                if opts.drop_tardy:
-                    warn(
-                        f"Dropping tardy message for previously timed-out "
-                        f"aggregation for {method} ({id(ag)})"
-                    )
-                    return
-                else:
-                    debug(
-                        f"Re-sending now-complete timed-out "
-                        f"aggregation for {method} ({id(ag)})!"
-                    )
-            elif ag.dispatched:
-                if opts.drop_tardy:
-                    warn(
-                        f"Dropping tardy message for previously completed "
-                        f"aggregation for {method} ({id(ag)})!"
-                    )
-                    return
-                else:
-                    debug(
-                        f"Re-sending enhancement of previously completed "
-                        f"aggregation for {method} ({id(ag)})!"
-                    )
-            else:
-                debug(f"Completing aggregation for {method} ({id(ag)})!")
-
-            # Cancel timeout
-            if ag.timeout_task:
-                ag.timeout_task.cancel()
-
-            # Send aggregated result to client
-            await send_to_client(_reconstruct(ag), method)
-            ag.dispatched = True
-
-            # Remove from requests needing aggregation if it's a response
-            if ag.id is not None:
-                inflight_requests.pop(ag.id, None)
-
     async def handle_server_messages(proc: InferiorProcess):
         """Read from a server and route back to client."""
         nonlocal next_remapped_id
@@ -439,7 +439,7 @@ async def run_multiplexer(
                     # Forward to client with remapped ID
                     remapped_msg = msg.copy()
                     remapped_msg["id"] = remapped_id
-                    await send_to_client(remapped_msg, method, "<-s")
+                    await _send_to_client(remapped_msg, method, "<-s")
                     continue
 
                 # Server response OR Server notification
@@ -471,7 +471,7 @@ async def run_multiplexer(
                     # Skip whole aggregation state business if the
                     # original request targeted only one server.
                     if len(responders) == 1:
-                        await send_to_client(msg, method)
+                        await _send_to_client(msg, method)
                         continue
                     aggregation_key = ("response", req_id)
                     start_anew = False
@@ -490,7 +490,7 @@ async def run_multiplexer(
                         log(f"Dropping message from {proc.name}: {method}")
                         continue
                     if aggregation_data is None:
-                        await send_to_client(msg, method)
+                        await _send_to_client(msg, method)
                         continue
                     (aggregation_key, start_anew) = aggregation_data
 
@@ -501,7 +501,7 @@ async def run_multiplexer(
                 ):
                     await _continue_aggregation(item, ag)
                 else:
-                    await _start_aggregation(
+                    _start_aggregation(
                         item, aggregation_key, method, responders, req_id
                     )
 
