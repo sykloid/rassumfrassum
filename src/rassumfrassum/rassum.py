@@ -218,7 +218,9 @@ async def run_multiplexer(
                 if id is None and method is not None:
                     # Notification
                     log_message("-->", msg, method)
-                    await logic.on_client_notification(method, msg.get("params", {}))
+                    await logic.on_client_notification(
+                        method, msg.get("params", {})
+                    )
 
                     for p in procs:
                         await write_lsp_message(p.stdin, msg)
@@ -291,7 +293,9 @@ async def run_multiplexer(
     def _reconstruct(ag: AggregationState) -> JSON:
         """Reconstruct full JSONRPC message from aggregation state."""
 
-        payload, is_error = logic.aggregate_payloads(ag.method, list(ag.aggregate.values()))
+        payload, is_error = logic.aggregate_payloads(
+            ag.method, list(ag.aggregate.values())
+        )
 
         if ag.id is not None:
             # Response
@@ -308,81 +312,92 @@ async def run_multiplexer(
                 "params": payload,
             }
 
-    async def _aggregation_heroics(
-            proc, aggregation_key, start_anew, method, targets, req_id, payload, is_error
+    async def _start_aggregation(
+        item, aggregation_key, method, responders, req_id
     ):
-        ag = not start_anew and pending_aggregations.get(aggregation_key)
+        """Start a new aggregation with the first message."""
+        proc = cast(InferiorProcess, item.server.cookie)
+        outstanding = responders.copy()
+        outstanding.discard(proc)
 
-        if not ag:
-            outstanding = targets.copy()
-
-            outstanding.discard(proc)
-
-            # First message in this aggregation
-            async def send_whatever_is_there(state: AggregationState, method):
-                await asyncio.sleep(
-                    logic.get_aggregation_timeout_ms(method) / 1000.0
-                )
-                log(f"Timeout for aggregation for {method} ({id(state)})!")
-                state.dispatched = "timed-out"
-                await send_to_client(_reconstruct(state), method)
-
-            ag = AggregationState(
-                outstanding=outstanding,
-                id=req_id,
-                method=method,
-                aggregate={id(proc): PayloadItem(payload, proc.server, is_error)},
+        async def send_whatever_is_there(state: AggregationState, method):
+            await asyncio.sleep(
+                logic.get_aggregation_timeout_ms(method) / 1000.0
             )
-            debug(f"Message from {proc.name} starts aggregation for {method} ({id(ag)})")
-            ag.timeout_task = asyncio.create_task(
-                send_whatever_is_there(ag, method)
+            log(f"Timeout for aggregation for {method} ({id(state)})!")
+            state.dispatched = "timed-out"
+            await send_to_client(_reconstruct(state), method)
+
+        ag = AggregationState(
+            outstanding=outstanding,
+            id=req_id,
+            method=method,
+            aggregate={id(proc): item},
+        )
+        debug(
+            f"Message from {item.server.name} starts aggregation for {method} ({id(ag)})"
+        )
+        ag.timeout_task = asyncio.create_task(
+            send_whatever_is_there(ag, method)
+        )
+        pending_aggregations[aggregation_key] = ag
+
+    async def _continue_aggregation(item, ag):
+        """Continue an existing aggregation with an additional message."""
+        proc = cast(InferiorProcess, item.server.cookie)
+        method = ag.method
+        debug(
+            f"Message from {item.server.name} continues aggregation for {method} ({id(ag)})"
+        )
+
+        if ag.dispatched:
+            debug(
+                f"Tardy {item.server.name} aggregation for {method} ({id(ag)})"
             )
-            pending_aggregations[aggregation_key] = ag
-        else:
-            method = ag.method
-            debug(f"Message from {proc.name} starts aggregation for {method} ({id(ag)})")
-            # Not the first message - aggregate with previous
-            if ag.dispatched:
-                debug(f"Tardy {proc.name} aggregation for {method} ({id(ag)})")
-            ag.aggregate[id(proc)] = PayloadItem(payload, proc.server, is_error)
-            ag.outstanding.discard(proc)
-            if not ag.outstanding:
-                # Aggregation is now complete
-                if ag.dispatched == "timed-out":
-                    if opts.drop_tardy:
-                        warn(
-                            f"Dropping tardy message for previously timed-out "
-                            f"aggregation for {method} ({id(ag)})"
-                        )
-                        return
-                    else:
-                        debug(
-                            f"Re-sending now-complete timed-out "
-                            f"aggregation for {method} ({id(ag)})!"
-                        )
-                elif ag.dispatched:
-                    if opts.drop_tardy:
-                        warn(
-                            f"Dropping tardy message for previously completed "
-                            f"aggregation for {method} ({id(ag)})!"
-                        )
-                        return
-                    else:
-                        debug(
-                            f"Re-sending enhancement of previously completed "
-                            f"aggregation for {method} ({id(ag)})!"
-                        )
+
+        ag.aggregate[id(proc)] = item
+        ag.outstanding.discard(proc)
+
+        if not ag.outstanding:
+            # Aggregation is now complete
+            if ag.dispatched == "timed-out":
+                if opts.drop_tardy:
+                    warn(
+                        f"Dropping tardy message for previously timed-out "
+                        f"aggregation for {method} ({id(ag)})"
+                    )
+                    return
                 else:
-                    debug(f"Completing aggregation for {method} ({id(ag)})!")
-                # Cancel timeout
-                if ag.timeout_task:
-                    ag.timeout_task.cancel()
-                # Send aggregated result to client
-                await send_to_client(_reconstruct(ag), method)
-                ag.dispatched = True
-                # Remove from requests needing aggregation if it's a response
-                if req_id is not None:
-                    inflight_requests.pop(req_id, None)
+                    debug(
+                        f"Re-sending now-complete timed-out "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+            elif ag.dispatched:
+                if opts.drop_tardy:
+                    warn(
+                        f"Dropping tardy message for previously completed "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+                    return
+                else:
+                    debug(
+                        f"Re-sending enhancement of previously completed "
+                        f"aggregation for {method} ({id(ag)})!"
+                    )
+            else:
+                debug(f"Completing aggregation for {method} ({id(ag)})!")
+
+            # Cancel timeout
+            if ag.timeout_task:
+                ag.timeout_task.cancel()
+
+            # Send aggregated result to client
+            await send_to_client(_reconstruct(ag), method)
+            ag.dispatched = True
+
+            # Remove from requests needing aggregation if it's a response
+            if ag.id is not None:
+                inflight_requests.pop(ag.id, None)
 
     async def handle_server_messages(proc: InferiorProcess):
         """Read from a server and route back to client."""
@@ -429,7 +444,7 @@ async def run_multiplexer(
 
                 # Server response OR Server notification
                 aggregation_key = None
-                targets = set(procs)  # responses can override this
+                responders = set(procs)  # responses can override this
                 is_error = False
 
                 if method is None:
@@ -438,10 +453,12 @@ async def run_multiplexer(
                     if not request_info:
                         log(f"Dropping response to unknown {req_id}")
                         continue
-                    method, req_params, targets = request_info
+                    method, req_params, responders = request_info
                     is_error = "error" in msg
                     payload = (
-                        msg.get("error") if is_error else msg.get("result")
+                        msg.get("error", {})
+                        if is_error
+                        else msg.get("result", {})
                     )
                     log_message(f"[{proc.name}] <--", msg, method)
                     await logic.on_server_response(
@@ -453,7 +470,7 @@ async def run_multiplexer(
                     )
                     # Skip whole aggregation state business if the
                     # original request targeted only one server.
-                    if len(targets) == 1:
+                    if len(responders) == 1:
                         await send_to_client(msg, method)
                         continue
                     aggregation_key = ("response", req_id)
@@ -477,18 +494,16 @@ async def run_multiplexer(
                         continue
                     (aggregation_key, start_anew) = aggregation_data
 
-                # If we haven't continued the loop and we got here,
-                # start aggregation heroics
-                await _aggregation_heroics(
-                    proc,
-                    aggregation_key,
-                    start_anew,
-                    method,
-                    targets,
-                    req_id,
-                    payload,
-                    is_error,
-                )
+                # If we haven't continued the loop and we got here, aggregate
+                item = PayloadItem(payload, proc.server, is_error)
+                if ag := not start_anew and pending_aggregations.get(
+                    aggregation_key
+                ):
+                    await _continue_aggregation(item, ag)
+                else:
+                    await _start_aggregation(
+                        item, aggregation_key, method, responders, req_id
+                    )
 
         except RuntimeError:
             # Server crashed - re-raise to propagate to main
