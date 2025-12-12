@@ -83,9 +83,12 @@ def _load_preset_from_file(filepath: str) -> Any:
 
 
 def _load_preset_from_bundle(name: str) -> Any:
-    """Load bundled preset by name from project root presets/ directory."""
-    # Get project root (two levels up from this file)
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(os.path.dirname(this_dir))
-    preset_path = os.path.join(project_root, 'presets', f'{name}.py')
+    """Load bundled preset from rassumfrassum.presets subpackage."""
+    # Find the presets subpackage location
+    presets_spec = importlib.util.find_spec('rassumfrassum.presets')
+    if presets_spec is None or presets_spec.origin is None:
+        raise FileNotFoundError(f"Cannot find rassumfrassum.presets package")
+
+    presets_dir = os.path.dirname(presets_spec.origin)
+    preset_path = os.path.join(presets_dir, f'{name}.py')
     return _load_preset_from_file(preset_path)

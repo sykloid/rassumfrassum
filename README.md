@@ -255,4 +255,4 @@ subclassing `LspLogic`.
 [neovim]: https://neovim.io/
 [codebook]: https://github.com/blopker/codebook
 [typos]: https://github.com/tekumara/typos-lsp
-[vue-preset]: https://github.com/joaotavora/rassumfrassum/blob/master/presets/vue.py
+[vue-preset]: https://github.com/joaotavora/rassumfrassum/blob/master/src/rassumfrassum/presets/vue.py

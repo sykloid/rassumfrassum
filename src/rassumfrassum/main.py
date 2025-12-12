@@ -7,7 +7,7 @@ import argparse
 import asyncio
 import sys
 
-from .presets import load_preset
+from .preset import load_preset
 from .rassum import run_multiplexer
 from .util import (
     log,
