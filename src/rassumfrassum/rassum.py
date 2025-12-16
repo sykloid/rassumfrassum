@@ -23,6 +23,7 @@ from .json import (
     write_message as write_lsp_message,
 )
 from .util import event, log, warn, debug
+from .stdio import create_stdin_reader, create_stdout_writer
 
 
 class InferiorProcess:
@@ -171,21 +172,8 @@ async def run_multiplexer(
         log(f"Delaying server responses by {opts.delay_ms}ms")
 
     # Get client streams
-    loop = asyncio.get_event_loop()
-
-    client_reader = asyncio.StreamReader()
-    client_protocol = asyncio.StreamReaderProtocol(client_reader)
-    _ = await loop.connect_read_pipe(lambda: client_protocol, sys.stdin)
-
-    (
-        client_writer_transport,
-        client_writer_protocol,
-    ) = await loop.connect_write_pipe(
-        asyncio.streams.FlowControlMixin, sys.stdout
-    )
-    client_writer = asyncio.StreamWriter(
-        client_writer_transport, client_writer_protocol, None, loop
-    )
+    client_reader = await create_stdin_reader(opts.threaded_stdio)
+    client_writer = await create_stdout_writer(opts.threaded_stdio)
 
     async def _send_to_client(message: JSON, method: str, direction="<--"):
         """Send a message to the client, with optional delay."""
